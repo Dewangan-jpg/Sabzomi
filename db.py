@@ -2,7 +2,7 @@
 import json, os, sqlite3, time
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get("SABZOMI_DB", "sabzomi.db")
+DB_PATH = os.environ.get("SABZOMI_DB", "/tmp/sabzomi.db")
 
 # Every business rule below is a default only; admins change them via /api/admin/settings.
 DEFAULTS = {
