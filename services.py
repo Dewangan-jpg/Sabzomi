@@ -31,6 +31,9 @@ def audit(db, actor, action, entity=None, entity_id=None, before=None, after=Non
                (actor, action, entity, str(entity_id) if entity_id is not None else None, json.dumps(before) if before is not None else None,
                 json.dumps(after) if after is not None else None, reason, ctx.get("ip"), ctx.get("ua"), now()))
 
+def notify(db, uid, title, body=""):
+    db.execute("INSERT INTO notifications(user_id,title,body,created_at) VALUES(?,?,?,?)", (uid, title, body, now()))
+
 def flag(db, user_id, kind, detail):
     db.execute("INSERT INTO risk_flags(user_id,kind,detail,status,created_at) VALUES(?,?,?,'open',?)", (user_id, kind, detail, now()))
 
@@ -164,7 +167,7 @@ def release_due(db):
     n = 0
     for c in db.execute("SELECT c.* FROM commissions c JOIN orders o ON o.id=c.order_id WHERE c.status='pending' AND c.release_at<=? AND o.status='delivered'", (now(),)).fetchall():
         post(db, c["beneficiary_id"], "commission", "credit", c["amount_paise"], "commission", c["id"], f"Level {c['level']} commission")
-        db.execute("UPDATE commissions SET status='available', released_at=? WHERE id=?", (now(), c["id"])); n += 1
+        db.execute("UPDATE commissions SET status='available', released_at=? WHERE id=?", (now(), c["id"])); notify(db, c["beneficiary_id"], "Commission available", f"{inr(c['amount_paise'])} added to your wallet"); n += 1
     return n
 
 def reverse_commissions(db, order_id, reason):
@@ -233,12 +236,13 @@ def build_quote(db, items, pincode, coupon, method, cfg):
 def public_quote(q):
     return {**q, "groups": [{**g, "items": [{k: v for k, v in i.items() if k not in ("cost_paise", "other_cost_paise")} for i in g["items"]]} for g in q["groups"]]}
 
-def place_order(db, user, items, address, method, coupon):
+def place_order(db, user, items, address, method, coupon, gid=None, expect_total=None):
     cfg = get_settings(db)
     for k in ("name", "phone", "line1", "pincode"):
         if not str((address or {}).get(k, "")).strip(): raise ApiError(f"Address field '{k}' is required", 422)
     if method not in ("wallet", "gateway"): raise ApiError("payment_method must be wallet or gateway", 422)
     q = build_quote(db, items, address["pincode"], coupon, method, cfg)
+    if expect_total is not None and q["grand_total_paise"] != expect_total: raise ApiError("Prices changed. Please review your cart.", 409)
     if method == "wallet" and balance(db, user["id"]) < q["grand_total_paise"]: raise ApiError("Insufficient wallet balance", 402, required_paise=q["grand_total_paise"])
     ref, orders = "CK" + secrets.token_hex(6).upper(), []
     for g in q["groups"]:
@@ -258,7 +262,7 @@ def place_order(db, user, items, address, method, coupon):
     if q["coupon"]: db.execute("UPDATE coupons SET used=used+1 WHERE code=?", (q["coupon"],))
     out = {"checkout_ref": ref, "orders": orders, "quote": public_quote(q)}
     if method == "gateway":
-        gid = "gw_" + uuid.uuid4().hex[:14]
+        gid = gid or "gw_" + uuid.uuid4().hex[:14]
         db.execute("INSERT INTO payments(user_id,purpose,ref,amount_paise,gateway_order_id,created_at) VALUES(?,?,?,?,?,?)", (user["id"], "order", ref, q["grand_total_paise"], gid, now()))
         out["payment"] = {"gateway_order_id": gid, "amount_paise": q["grand_total_paise"]}
     return out
@@ -270,17 +274,20 @@ def sign(raw): return hmac.new(GATEWAY_SECRET.encode(), raw, hashlib.sha256).hex
 
 def handle_webhook(db, raw, signature):
     if not signature or not hmac.compare_digest(sign(raw), signature): raise ApiError("Invalid signature", 401)
-    ev = json.loads(raw); pay = db.execute("SELECT * FROM payments WHERE gateway_order_id=?", (ev.get("gateway_order_id"),)).fetchone()
+    return apply_event(db, json.loads(raw))
+
+def apply_event(db, ev):
+    pay = db.execute("SELECT * FROM payments WHERE gateway_order_id=?", (ev.get("gateway_order_id"),)).fetchone()
     if not pay: raise ApiError("Unknown payment", 404)
     if pay["status"] != "created": return {"status": "already_processed"}
     if ev.get("event") == "payment.failed":
         db.execute("UPDATE payments SET status='failed' WHERE id=?", (pay["id"],)); return {"status": "failed"}
     if ev.get("event") != "payment.captured" or ev.get("amount_paise") != pay["amount_paise"] or not ev.get("gateway_payment_id"): raise ApiError("Payment verification failed", 422)
     db.execute("UPDATE payments SET status='captured', gateway_payment_id=? WHERE id=?", (ev["gateway_payment_id"], pay["id"]))
-    if pay["purpose"] == "topup": post(db, pay["user_id"], "wallet_topup", "credit", pay["amount_paise"], "payment", pay["id"], "Wallet top-up")
+    if pay["purpose"] == "topup": post(db, pay["user_id"], "wallet_topup", "credit", pay["amount_paise"], "payment", pay["id"], "Wallet top-up"); notify(db, pay["user_id"], "Wallet topped up", f"{inr(pay['amount_paise'])} added to your wallet")
     else:
         for o in db.execute("SELECT * FROM orders WHERE checkout_ref=? AND payment_status='pending'", (pay["ref"],)).fetchall():
-            db.execute("UPDATE orders SET payment_status='paid', status='confirmed' WHERE id=?", (o["id"],)); event(db, o["id"], "confirmed", "Gateway payment verified")
+            db.execute("UPDATE orders SET payment_status='paid', status='confirmed' WHERE id=?", (o["id"],)); event(db, o["id"], "confirmed", "Gateway payment verified"); notify(db, o["user_id"], "Payment received", f"Order {o['order_no']} is confirmed")
     return {"status": "captured"}
 
 # ---------- order lifecycle ----------
@@ -294,7 +301,7 @@ def set_status(db, order, new, note="", actor=None, ctx=None):
     if new not in FLOW[order["status"]]: raise ApiError(f"Cannot move order from {order['status']} to {new}", 409)
     if new == "confirmed" and order["payment_status"] != "paid": raise ApiError("Order is not paid", 409)
     if new == "refunded": return refund(db, order, note or "Refund", actor, ctx)
-    db.execute("UPDATE orders SET status=? WHERE id=?", (new, order["id"])); event(db, order["id"], new, note)
+    db.execute("UPDATE orders SET status=? WHERE id=?", (new, order["id"])); event(db, order["id"], new, note); notify(db, order["user_id"], f"Order {order['order_no']} {new.replace('_', ' ')}", note)
     if new == "delivered":
         db.execute("UPDATE orders SET delivered_at=? WHERE id=?", (now(), order["id"]))
         generate_commissions(db, db.execute("SELECT * FROM orders WHERE id=?", (order["id"],)).fetchone())
@@ -310,7 +317,7 @@ def refund(db, order, reason, actor=None, ctx=None):
     cfg = get_settings(db)
     if order["payment_status"] == "paid":
         post(db, order["user_id"], "refund", "credit", order["total_paise"], "order", order["order_no"], f"Refund for {order['order_no']}")
-    db.execute("UPDATE orders SET payment_status='refunded', status='refunded' WHERE id=?", (order["id"],)); event(db, order["id"], "refunded", reason)
+    db.execute("UPDATE orders SET payment_status='refunded', status='refunded' WHERE id=?", (order["id"],)); event(db, order["id"], "refunded", reason); notify(db, order["user_id"], f"Order {order['order_no']} refunded", inr(order["total_paise"]))
     _restock(db, order["id"])
     if cfg["clawback_on_refund"]: reverse_commissions(db, order["id"], f"Order {order['order_no']} refunded")
     n = db.execute("SELECT COUNT(*) c FROM orders WHERE user_id=? AND status='refunded' AND created_at>?", (order["user_id"], now() - 30 * 86400)).fetchone()["c"]
@@ -329,7 +336,8 @@ def save_payout(db, uid, data):
             raise ApiError("Invalid bank details (holder, 9-18 digit account, IFSC)", 422)
         out["bank"] = {"holder": b["holder"], "account": str(b["account"]), "ifsc": b["ifsc"].upper(), "bank_name": b.get("bank_name", "")}
     if not out: raise ApiError("Provide a UPI ID or bank details", 422)
-    db.execute("UPDATE users SET payout_enc=? WHERE id=?", (enc(out), uid))
+    cur = dec(db.execute("SELECT payout_enc FROM users WHERE id=?", (uid,)).fetchone()["payout_enc"]) or {}
+    db.execute("UPDATE users SET payout_enc=? WHERE id=?", (enc({**cur, **out}), uid))
 
 def mask_payout(p):
     if not p: return None
@@ -363,4 +371,16 @@ def move_withdrawal(db, wid, new, actor=None, ref=None, note=None, ctx=None, own
     db.execute("UPDATE withdrawals SET status=?, reference=COALESCE(?,reference), admin_note=COALESCE(?,admin_note), updated_at=? WHERE id=?", (new, ref, note, now(), wid))
     if new in ("rejected", "failed", "cancelled"):
         post(db, w["user_id"], "withdrawal_release", "credit", w["amount_paise"], "withdrawal", wid, f"Withdrawal {new}")
+    notify(db, w["user_id"], f"Withdrawal {new}", inr(w["amount_paise"]))
     audit(db, actor, "withdrawal_" + new, "withdrawal", wid, {"status": w["status"]}, {"status": new}, note, ctx)
+
+# ---------- maintenance (run by scheduler / admin) ----------
+def expire_unpaid(db, minutes=30):
+    """Cancel gateway orders that were never paid, returning stock to inventory."""
+    n = 0
+    for o in db.execute("SELECT * FROM orders WHERE status='pending' AND payment_method='gateway' AND payment_status='pending' AND created_at<?", (now() - minutes * 60,)).fetchall():
+        set_status(db, o, "cancelled", "Payment not completed in time")
+        db.execute("UPDATE payments SET status='failed' WHERE ref=? AND status='created'", (o["checkout_ref"],)); n += 1
+    return n
+
+def run_maintenance(db): return {"released": release_due(db), "expired": expire_unpaid(db)}

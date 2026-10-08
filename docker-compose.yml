@@ -1,0 +1,9 @@
+services:
+  sabzomi:
+    build: .
+    env_file: sabzomi.env
+    ports: ["8000:8000"]
+    volumes: ["sabzomi-data:/data"]
+    restart: unless-stopped
+volumes:
+  sabzomi-data:

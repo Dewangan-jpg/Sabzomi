@@ -2,7 +2,19 @@
 import json, os, sqlite3, time
 from contextlib import contextmanager
 
-DB_PATH = os.environ.get("SABZOMI_DB", "/tmp/sabzomi.db")
+def _load_env():
+    """Read KEY=VALUE lines from a .env file next to the code (real environment variables win)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name in ("sabzomi.env", ".env"):          # "sabzomi.env" is visible in cPanel File Manager; ".env" also works
+        p = os.path.join(here, name)
+        if os.path.exists(p):
+            for line in open(p, encoding="utf-8"):
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1); os.environ.setdefault(k.strip(), v.split(" #")[0].strip().strip('"').strip("'"))
+_load_env()
+
+DB_PATH = os.environ.get("SABZOMI_DB", "sabzomi.db")
 
 # Every business rule below is a default only; admins change them via /api/admin/settings.
 DEFAULTS = {
@@ -78,6 +90,11 @@ CREATE TABLE IF NOT EXISTS returns(id INTEGER PRIMARY KEY, order_id INTEGER NOT 
   reason TEXT, status TEXT NOT NULL DEFAULT 'requested', admin_note TEXT, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS risk_flags(id INTEGER PRIMARY KEY, user_id INTEGER, kind TEXT NOT NULL, detail TEXT,
   status TEXT NOT NULL DEFAULT 'open', created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS password_resets(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, token_hash TEXT UNIQUE NOT NULL, expires_at REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, title TEXT NOT NULL, body TEXT, is_read INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_notif_user ON notifications(user_id, is_read);
+CREATE TABLE IF NOT EXISTS tickets(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, subject TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', created_at REAL NOT NULL, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS ticket_messages(id INTEGER PRIMARY KEY, ticket_id INTEGER NOT NULL REFERENCES tickets(id), author_id INTEGER NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0, body TEXT NOT NULL, created_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY, actor_id INTEGER, action TEXT NOT NULL, entity TEXT, entity_id TEXT,
   before_json TEXT, after_json TEXT, reason TEXT, ip TEXT, user_agent TEXT, created_at REAL NOT NULL);
 CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT,'audit log is immutable'); END;
@@ -85,6 +102,7 @@ CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit_log BEGIN SE
 """
 
 def connect(path=None):
+    folder = os.path.dirname(os.path.abspath(path or DB_PATH)); os.makedirs(folder, exist_ok=True)
     c = sqlite3.connect(path or DB_PATH, isolation_level=None, check_same_thread=False, timeout=15)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL"); c.execute("PRAGMA foreign_keys=ON")
