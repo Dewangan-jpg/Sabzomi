@@ -136,6 +136,10 @@ def create_app(db_path=None):
             db.execute("UPDATE password_resets SET used=1 WHERE user_id=?", (r["user_id"],)); S.audit(db, r["user_id"], "password_reset", "user", r["user_id"], ctx=ctx())
         return jsonify(ok=True)
 
+    @app.route("/api/<path:url>", methods=["OPTIONS"])
+    def handle_options(url):
+        return jsonify(ok=True), 200
+
     @app.get("/api/health")
     def health(): return jsonify(ok=True)
 
