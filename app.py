@@ -16,7 +16,7 @@ def create_app(db_path=None):
         from werkzeug.middleware.proxy_fix import ProxyFix
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
     path = db_path or D.DB_PATH
-    UPLOADS = os.environ.get("SABZOMI_UPLOADS") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads"); os.makedirs(UPLOADS, exist_ok=True)
+    UPLOADS = os.environ.get("SABZOMI_UPLOADS") or "/tmp/uploads"; os.makedirs(UPLOADS, exist_ok=True)
     boot = D.connect(path); D.init_db(boot)
     if os.environ.get("ADMIN_PASSWORD"):          # first-run setup without a shell (cPanel): creates admin + demo catalog once
         import seed; seed.seed(boot)
