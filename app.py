@@ -44,14 +44,29 @@ def create_app(db_path=None):
         r.headers.update({"Access-Control-Allow-Origin": "https://sabzomi.in", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS"})
         return r
     @app.errorhandler(ApiError)
-    def _api(e): return jsonify(error=e.msg, **e.extra), e.status
+    def _api(e):
+        res = jsonify(error=e.msg, **e.extra)
+        res.headers["Access-Control-Allow-Origin"] = "https://sabzomi.in"
+        return res, e.status
+
     @app.errorhandler(404)
-    def _404(e): return jsonify(error="Not found"), 404
+    def _404(e):
+        res = jsonify(error="Not found")
+        res.headers["Access-Control-Allow-Origin"] = "https://sabzomi.in"
+        return res, 404
+
     @app.errorhandler(405)
-    def _405(e): return jsonify(error="Method not allowed"), 405
+    def _405(e):
+        res = jsonify(error="Method not allowed")
+        res.headers["Access-Control-Allow-Origin"] = "https://sabzomi.in"
+        return res, 405
+
     @app.errorhandler(Exception)
     def _500(e):
-        app.logger.exception(e); return jsonify(error="Something went wrong. Please try again."), 500
+        app.logger.exception(e)
+        res = jsonify(error="Something went wrong. Please try again.")
+        res.headers["Access-Control-Allow-Origin"] = "https://sabzomi.in"
+        return res, 500
 
     ctx = lambda: {"ip": request.remote_addr, "ua": request.headers.get("User-Agent", "")[:200]}
     body = lambda: request.get_json(silent=True) or {}
