@@ -41,8 +41,7 @@ def create_app(db_path=None):
         r.headers.update({"X-Content-Type-Options": "nosniff", "X-Frame-Options": "SAMEORIGIN", "Referrer-Policy": "strict-origin-when-cross-origin"})
         r.headers["Cache-Control"] = "no-store" if request.path.startswith("/api") else ("public, max-age=86400" if request.path.startswith("/uploads") else "no-cache")
         if os.environ.get("FORCE_HTTPS") == "1": r.headers["Strict-Transport-Security"] = "max-age=31536000"
-        o = os.environ.get("CORS_ORIGIN")
-        if o: r.headers.update({"Access-Control-Allow-Origin": o, "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS"})
+        r.headers.update({"Access-Control-Allow-Origin": "https://sabzomi.in", "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS"})
         return r
     @app.errorhandler(ApiError)
     def _api(e): return jsonify(error=e.msg, **e.extra), e.status
