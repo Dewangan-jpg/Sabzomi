@@ -1,6 +1,6 @@
 const IMG={Grocery:'img/cat-grocery.jpg',Electronics:'img/cat-electronics.jpg',Clothing:'img/cat-clothing.jpg',Decor:'img/cat-decor.jpg',hero:'img/hero.jpg'};
 const NI={'Fresh Tomatoes':'img/tomatoes.jpg','Organic Bananas':'img/bananas.jpg','Onions':'img/onions.jpg','Basmati Rice':'img/rice.jpg','Cooking Oil':'img/oil.jpg','Maggi Noodles':'img/maggi.jpg','Tata Salt':'img/salt.jpg','Amul Butter':'img/butter.jpg'};
-const API = "https://vercel.app";   // '' = same server; set in index.html if the API lives elsewhere
+const API = "https://vercel.app";
 const pimg=p=>p.image?API+p.image:(NI[p.name]||'');
 
 const MIN=999,FREE=999,FEE=80,OF={Electronics:60,Clothing:50,Decor:50};
